@@ -1,0 +1,150 @@
+=encoding utf8
+
+=pod
+
+=head1 What?
+
+This is a collection of scripts I hacked together as a replacement for
+Dropbox. Dropbox serves three use-cases for me:
+
+=over 4
+
+=item * Syncing files across different machines
+
+That's what I<L<unison|http://www.cis.upenn.edu/~bcpierce/unison/>> is for.
+C<unisyn> is a script that, together with C<wait-for-one> (I couldn't
+find a better name, sorry :) and I<L<inw|https://github.com/yath/inw>>
+waits for changes on either side and triggers a unison run.
+
+=item * Sharing files to the public
+
+Simply an I<L<nginx|http://nginx.org/>> set up to point to C<~/u/pub>
+(where C<~/u> is my synchronized directory).
+
+=item * Publishing files from my phone
+
+I send the files via e-mail to a special mail address that my mail server
+hands over to C<umail>, which in turn puts it to C<~/u/pub> and replies
+with the link so I can easily copy&paste it somewhere.
+
+=back
+
+=head1 The scripts in detail
+
+=head2 C<inw>
+
+A wrapper for I<L<inotify-tools|inotify-tools.sourceforge.net>>. See
+L<https://github.com/yath/inw> for the project.
+
+=head2 C<wait-for-one>
+
+Accepts a list of commands on the command-line, waits for one to complete,
+kills the others and returns with the return code of the command finished.
+
+Example:
+
+ $ perl wait-for-one "sleep 2 && false" "cat"
+ 'sleep 2 && false' exited with return code 1
+ $ echo $?
+ 1
+ $
+
+That's it. It's used by unisync to call C<inw> locally and remote and
+wait for one side to report changes.
+
+=head2 C<unisyn>
+
+The actual syncing script. Does nothing much except calling C<wait-for-one>
+as described above and call unison afterwards. Exits if a file C<~/u/.nosync>
+exists, when C<wait-for-one> returns with an error or if another instance
+is already running.
+
+C<unisyn> is meant to be started by cron; I call it every three minutes.
+It won't do anything if started already, and while running it just waits
+for changes in C<~/u>.
+
+=head2 C<umail>
+
+Handler for incoming mail. I have created an alias,
+
+ u: |/home/yath/umail.wrap
+
+in my C</etc/aliases>. C<umail.wrap> just calls sudo for my user to the
+actual C<umail> script:
+
+ #!/bin/sh
+ exec sudo -u yath /home/yath/umail
+
+(The corresponding sudoers entry is C<Debian-exim ALL=(yath) NOPASSWD:
+/home/yath/umail>.)
+
+For Debian's exim you need to set C<SYSTEM_ALIASES_PIPE_TRANSPORT> to
+C<address_pipe> in your local macro definitions.
+
+C<umail> reads a MIME encoded mail from stdin, validates it, saves the
+attachment to C<~/u/pub> and replies to the sender with a list of
+the URLs and/or error/warning messages.
+
+The script is even a bit more crappy than the others; I doubt it will
+live long.
+
+=head3 C<umail.auth.pl>
+
+Lives in the same directory as C<umail> and contains a subroutine
+C<check_validity> that gets an C<L<Email::MIME|http://search.cpan.org/perldoc?Email::MIME>>
+object passed and is supposed to return a true value when validation
+was successful or a false value otherwise.
+
+=head3 A note on e-mail
+
+It turned out that e-mail might not be the best protocol for that.
+While I knew that because of Base64 my data gets blown up by one third
+I didn't simply think about K-9 Mail copying this inflated message to
+the Sent folder as well; so I'm actually transmitting 2.66 megabytes
+for a 1 MB image.
+
+Maybe someone (or I) comes up with a better solution.
+
+=head2 nginx config
+
+Just for the sake of completeness, here's the relevant nginx
+config snippet:
+
+ server {
+     listen   [::]:80;
+     server_name u.yath.de;
+ 
+     location / {
+         root /home/yath/u/pub;
+     }
+ 
+ }
+ 
+ server {
+     listen   [::]:443;
+     server_name u.yath.de;
+ 
+     ssl on;
+     ssl_certificate something.crt;
+     ssl_certificate_key something.key;
+ 
+     ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+     ssl_prefer_server_ciphers on;
+     ssl_ciphers EECDH+ECDSA+AESGCM:EECDH+aRSA+AESGCM:EECDH+ECDSA+SHA256:EECDH+aRSA+RC4:EDH+aRSA:EECDH:RC4:!aNULL:!eNULL:!LOW:!3DES:!MD5:!EXP:!PSK:!SRP:!DSS;
+     ssl_session_cache shared:SSL:10m;
+ 
+     location / {
+         root /home/yath/u/pub;
+     }
+ 
+ }
+
+=head1 Author
+
+Sebastian Schmidt <yath@yath.de>
+
+Except for C<inw>, which has its own license
+as described on its project page, everything in this repository is in the
+Public Domain.
+
+=cut

@@ -1,0 +1,52 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use POSIX qw(:sys_wait_h);
+
+my %children;
+
+END {
+    # we need to handle SIGCHLD for the children we kill
+    # to avoid zombies
+    sub REAPER {
+        waitpid(-1, WNOHANG);
+        $SIG{CHLD} = \&REAPER;
+    }
+    $SIG{CHLD} = \&REAPER;
+
+    foreach my $pid (keys %children) {
+        kill("TERM", $pid);
+    }
+}
+
+foreach my $cmdline (@ARGV) {
+    if (my $pid = fork) {
+        # parent
+        $children{$pid} = $cmdline;
+    } else {
+        # child
+        exec($cmdline);
+    }
+}
+
+# wait for a child to exit
+my $pid = waitpid(-1, 0);
+
+my $rc = 255;
+my $cen = ${^CHILD_ERROR_NATIVE};
+my $reason = do {
+    if (WIFEXITED($cen)) {
+        $rc = WEXITSTATUS($cen);
+        "exited with return code $rc";
+    } elsif (WIFSIGNALED($cen)) {
+        "terminated by signal ".WTERMSIG($cen);
+    } else {
+        "terminated for an unkown reason (\$cen = $cen)"
+    }
+};
+
+print "'$children{$pid}' $reason\n";
+delete $children{$pid};
+# other childs will be killed in END{}
+
+exit $rc;

@@ -1,0 +1,50 @@
+#!/bin/bash
+
+if ! [ "$UID" ]; then
+    echo "$0: \$UID is unset. Run me in a bash." >&2
+    exit 1
+fi
+
+PATH="$PATH:/usr/local/bin"
+
+WFO=$HOME/scripts/wait-for-one
+DIR=$HOME/u
+HOST=karr
+LOCKFILE=/tmp/unisyn-$UID
+NOSYNC=$DIR/.nosync
+INWARGS="-T 3 -M 30 -r -e close_write,move,create,delete,delete_self"
+UNISONARGS="-batch"
+SSHARGS="-o BatchMode=yes -o ServerAliveInterval=15"
+
+if [ "$1" = "-q" ]; then
+    QUIET=1
+    INWARGS="$INWARGS -qq"
+else
+    INWARGS="$INWARGS -V"
+fi
+
+if [ -e "$LOCKFILE" ] && [ "$(stat -c %u "$LOCKFILE")" != "$UID" ]; then
+    echo "Lock file $LOCKFILE exists but is not owned by uid $UID, exiting" >&2
+    exit 1
+fi
+
+check_nosync() {
+    if [ -e "$NOSYNC" ]; then
+        [ "$QUIET" ] || echo "$0 disabled by $NOSYNC" >&2
+        exit 0
+    fi
+}
+
+{
+    flock -n 9 || exit 0 # already running
+    check_nosync
+
+    while true; do
+        check_nosync
+        $WFO "inw $INWARGS $DIR" "ssh $SSHARGS karr 'inw $INWARGS $DIR'" || exit 1
+        check_nosync
+        unison $UNISONARGS "$DIR" "ssh://$HOST/$DIR"
+        sleep 2
+    done
+} 9> "$LOCKFILE"
+

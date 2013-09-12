@@ -1,0 +1,148 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Email::MIME;
+use constant { DSTDIR => "/home/yath/u/pub",
+               URLBASE => "https://u.yath.de/",
+             };
+use Cwd qw(realpath);
+use File::Spec::Functions qw(catfile splitpath);
+use Fcntl;
+use FindBin;
+
+my @msg;
+my @urls;
+
+# for sending mail back
+my ($from, $subject);
+
+my $dstdir_re = do {
+    my $d = DSTDIR;
+    $d .= "/" unless $d =~ m,/\$,;
+    qr/^$d/o
+};
+
+do "$FindBin::Bin/umail.auth.pl" or die
+    "Can't evaluate umail.auth.pl";
+
+sub handle_body {
+    my ($part) = @_;
+}
+
+sub handle_attachment {
+    my ($part, $files) = @_;
+    my $cd = $part->header("Content-Disposition");
+    die "Unable to determine attachment's filename"
+        unless $cd =~ /\bfilename="(.*?)"/;
+    my $filename = $1;
+
+    die "Can't have two files with same name ($filename)" if exists $files->{$filename};
+    die "Filename must not contain a slash" if $filename =~ m,/,;
+
+    my $path = realpath(catfile(DSTDIR, $filename));
+    if ($path !~ $dstdir_re) {
+        die "$path is not inside @{[DSTDIR]}!";
+    }
+
+    my $changed = 0;
+    while (-e $path) {
+        die "Unable to generate a unique file name" if $changed > 100;
+        my $rnd = sprintf('%06x', rand()*(16**6));
+        if ($filename !~ /\./) {
+            # special case: no extension
+            if ($changed) {
+                $path =~ s/[^.]+$/$rnd/;
+            } else {
+                $path .= ".$rnd";
+                $changed++;
+            }
+        } else {
+            if ($changed) {
+                print "path: $path\n";
+                $path =~ s/[^.]+\.([^.]*)$/$rnd.$1/;
+            } else {
+                $path =~ s/\.([^.]*)$/.$rnd.$1/;
+                $changed++;
+            }
+        }
+    }
+
+    push(@msg, "$filename renamed to ".(splitpath $path)[2]) if $changed;
+    $files->{$path} = $part->body;
+}
+
+sub main {
+    my $mail = Email::MIME->new(do { local $/; <> });
+    $from = $mail->header("From");
+    $subject = $mail->header("Subject");
+
+    undef $from unless $from =~ /@/;
+    $subject = "(no subject)" unless $subject;
+
+    check_validity($mail) or die "You are not authorized.\n";
+
+    my %files;
+    foreach my $part ($mail->parts) {
+        if ($part->header("Content-Type") =~ m,^text/plain\b, &&
+            ($part->header("Content-Disposition")||"") !~ /\battachment\b/) {
+            eval {
+                handle_body($part);
+            };
+            push(@msg, "Error handling body: $@") if $@;
+        } elsif (($part->header("Content-Disposition")||"") =~ /\battachment\b/) {
+            eval {
+                handle_attachment($part, \%files);
+            };
+            push(@msg, "Error handling attachment: $@") if $@;
+        }
+    }
+
+    foreach my $path (sort keys %files) {
+        eval {
+            sysopen(my $fh, $path, O_WRONLY|O_CREAT|O_EXCL) or die
+                "Unable to open $path: $!";
+            print $fh $files{$path} or die
+                "Unable to write to $path: $!";
+            close $fh or die
+                "Unable to close $path: $!";
+        };
+
+        push(@msg, "Error saving $path: $@") if $@;
+        push(@urls, URLBASE.((splitpath $path)[2]));
+    }
+}
+
+sub sendmail {
+    my ($text) = @_;
+    open(my $fh, "|-", "mail", "-s", "Re: $subject", $from)
+        or die "Unable to spawn mail: $!";
+    print $fh $text
+        or die "Unable to write to mail: $!";
+    close $fh
+        or die "Unable to close mail: $!";
+}
+
+eval {
+    main
+};
+
+push (@msg, "Error during main script execution: $@") if $@;
+
+my $text = "";
+if (@urls) {
+    my $plural = (@urls == 1) ? "" : "s";
+    $text .= "Please find your attachment$plural at the following URL$plural:\n";
+    $text .= "$_\n" foreach @urls;
+}
+
+if (@msg) {
+    $text .= "\n" if $text;
+    $text .= "Message(s) during processing:\n";
+    $text .= "$_\n" foreach @msg;
+}
+
+unless ($text) {
+    $text = "whoops? no text?";
+}
+
+sendmail $text;
